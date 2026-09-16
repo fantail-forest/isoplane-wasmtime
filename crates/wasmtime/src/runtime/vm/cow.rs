@@ -1020,6 +1020,69 @@ mod test {
     }
 
     #[test]
+    fn a_partial_snapshot_mapping_failure_can_be_cleared_and_reused() -> Result<()> {
+        use std::io::Write;
+        let page = host_page_size();
+        let mut file = tempfile::tempfile()?;
+        file.write_all(&vec![42; 3 * page])?;
+        let mut image = MemoryImage::from_snapshot_extents(
+            file,
+            2 * page,
+            vec![
+                crate::CowMemoryExtent {
+                    file_offset: 0,
+                    memory_offset: 0,
+                    length: page,
+                },
+                crate::CowMemoryExtent {
+                    file_offset: page as u64,
+                    memory_offset: page,
+                    length: page,
+                },
+            ],
+        )?;
+        // Inject an OS mapping failure on the second extent, after the first was installed.
+        // Production construction rejects this unaligned offset.
+        image.extents[1].file_offset = 1;
+        let image = Arc::new(image);
+        let mmap = mmap_4mib_inaccessible();
+        let mut slot = MemoryImageSlot::create(
+            mmap.zero_offset(),
+            HostAlignedByteCount::ZERO,
+            4 << 20,
+            None,
+        );
+        let ty = dummy_memory();
+        let config = Tunables::default_miri();
+        let tunables = MemoryTunables::new(&config, MemoryKind::LinearMemory);
+        slot.instantiate(2 * page, None, &ty, &tunables)?;
+        assert!(
+            slot.replace_snapshot(&image).is_err(),
+            "the second extent must fail to map"
+        );
+        assert!(
+            Arc::ptr_eq(slot.image.as_ref().unwrap(), &image),
+            "failed mappings must retain cleanup metadata"
+        );
+        // SAFETY: the first extent mapped successfully, the slot is idle, and no mutable borrow exists.
+        assert_eq!(
+            unsafe { mmap.slice(0..page) }[0],
+            42,
+            "the failure must occur after a real partial mapping"
+        );
+        slot.clear_and_remain_ready(None, HostAlignedByteCount::ZERO, decommit)?;
+        slot.instantiate(2 * page, None, &ty, &tunables)?;
+        // SAFETY: instantiation made this owned region accessible and no guest is running.
+        assert!(
+            unsafe { mmap.slice(0..2 * page) }
+                .iter()
+                .all(|byte| *byte == 0),
+            "a failed restore must not leak snapshot bytes into a reused slot"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn instantiate_no_image() {
         let ty = dummy_memory();
         let tunables = Tunables {

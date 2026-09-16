@@ -84,7 +84,6 @@ mod tests {
                     "slot reuse must restore the compiled baseline"
                 );
                 memory.grow(&mut store, 1)?;
-                // SAFETY: no guest call is active and this module has no other mutable state.
                 // SAFETY: the instance is idle and has no mutable state outside this memory.
                 unsafe { memory.restore_cow_image(&mut store, &snapshot)? };
                 let pointer = memory.data_ptr(&store) as usize;
@@ -119,6 +118,13 @@ mod tests {
                     "the offset image must cover its last page"
                 );
                 memory.data_mut(&mut store)[0] = 88;
+                memory.grow(&mut store, 1)?;
+                assert!(
+                    memory.data(&store)[2 * 65536..]
+                        .iter()
+                        .all(|byte| *byte == 0),
+                    "growth after restore must expose zeroed pages"
+                );
             }
             {
                 let mut store = Store::new(&engine, ());
@@ -156,6 +162,38 @@ mod tests {
             assert!(
                 unsafe { CowMemoryImage::from_file(file, offset, length) }.is_err(),
                 "invalid image offset/length must be rejected"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_extent_layouts() -> Result<()> {
+        let extent = |file_offset, memory_offset, length| CowMemoryExtent {
+            file_offset,
+            memory_offset,
+            length,
+        };
+        let cases = [
+            vec![],
+            vec![extent(0, 0, 0)],
+            vec![extent(1, 0, 65536)],
+            vec![extent(0, 1, 65536)],
+            vec![extent(0, 0, 1)],
+            vec![extent(65536, 0, 131072)],
+            vec![extent(0, 0, 65536), extent(0, 0, 65536)],
+            vec![extent(0, 0, 65536), extent(0, 131072, 65536)],
+            vec![extent(0, 0, 65536)],
+            vec![extent(u64::MAX - 4095, 0, 131072)],
+        ];
+        for extents in cases {
+            let file = tempfile::tempfile()?;
+            file.set_len(131072)?;
+            // SAFETY: no other file handle exists and no writer can mutate the image.
+            assert!(
+                unsafe { CowMemoryImage::from_file_extents(file, 131072, extents.clone()) }
+                    .is_err(),
+                "malformed layout must be refused: {extents:?}"
             );
         }
         Ok(())

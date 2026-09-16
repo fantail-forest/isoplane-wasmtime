@@ -237,6 +237,22 @@ pub enum Memory {
 }
 
 impl Memory {
+    #[cfg(all(target_os = "linux", feature = "std"))]
+    pub(crate) fn restore_cow_image(&mut self, image: &Arc<MemoryImage>) -> Result<()> {
+        let Self::Local(memory) = self else {
+            bail!("snapshot restoration does not support shared memory");
+        };
+        ensure!(
+            image.snapshot_len() == memory.alloc.byte_size(),
+            "snapshot length must equal the current memory size"
+        );
+        let slot = memory
+            .memory_image
+            .as_mut()
+            .ok_or_else(|| format_err!("memory has no Wasmtime-owned CoW slot"))?;
+        slot.replace_snapshot(image)
+    }
+
     /// Create a new dynamic (movable) memory instance for the specified plan.
     pub async fn new_dynamic(
         ty: &wasmtime_environ::Memory,

@@ -242,7 +242,7 @@ pub struct CowMemoryExtent {
     pub length: usize,
 }
 
-/// Immutable file-backed memory contents for the local snapshot experiment.
+/// Immutable file-backed contents for restoring linear-memory snapshots.
 #[cfg(all(target_os = "linux", feature = "std"))]
 #[derive(Clone)]
 pub struct CowMemoryImage(alloc::sync::Arc<vm::MemoryImage>);

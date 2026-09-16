@@ -230,7 +230,75 @@ const _: () = {
     assert!(core::mem::offset_of!(Memory, instance) == 0);
 };
 
+/// One file-backed range in a captured memory image.
+#[cfg(all(target_os = "linux", feature = "std"))]
+#[derive(Clone, Debug)]
+pub struct CowMemoryExtent {
+    /// Offset in the retained source file, in bytes.
+    pub file_offset: u64,
+    /// Offset in guest linear memory, in bytes.
+    pub memory_offset: usize,
+    /// Extent length, in bytes.
+    pub length: usize,
+}
+
+/// Immutable file-backed memory contents for the local snapshot experiment.
+#[cfg(all(target_os = "linux", feature = "std"))]
+#[derive(Clone)]
+pub struct CowMemoryImage(alloc::sync::Arc<vm::MemoryImage>);
+
+#[cfg(all(target_os = "linux", feature = "std"))]
+impl CowMemoryImage {
+    /// Map complete captured memory from ordered, page-aligned file extents.
+    ///
+    /// # Safety
+    /// File contents must remain unchanged until all image, store and allocator
+    /// references have been dropped.
+    pub unsafe fn from_file_extents(
+        file: std::fs::File,
+        length_bytes: usize,
+        extents: Vec<CowMemoryExtent>,
+    ) -> Result<Self> {
+        Ok(Self(alloc::sync::Arc::new(
+            vm::MemoryImage::from_snapshot_extents(file, length_bytes, extents)?,
+        )))
+    }
+
+    /// Map a page-aligned, nonempty complete linear-memory image.
+    ///
+    /// # Safety
+    /// The file contents must remain unchanged until this image and every store
+    /// or allocator slot retaining it have been dropped.
+    pub unsafe fn from_file(
+        file: std::fs::File,
+        offset_bytes: u64,
+        length_bytes: usize,
+    ) -> Result<Self> {
+        Ok(Self(alloc::sync::Arc::new(
+            vm::MemoryImage::from_snapshot_file(file, offset_bytes, length_bytes)?,
+        )))
+    }
+}
+
 impl Memory {
+    /// Replace current linear memory with a private mapping of a captured image.
+    /// Grow memory to the image size first. Discard this store if restoration fails.
+    ///
+    /// # Safety
+    /// No guest invocation may be active. Restore the remaining captured state
+    /// before executing the instance again.
+    #[cfg(all(target_os = "linux", feature = "std"))]
+    pub unsafe fn restore_cow_image(
+        &self,
+        mut store: impl AsContextMut,
+        image: &CowMemoryImage,
+    ) -> Result<()> {
+        self.instance
+            .get_mut(store.as_context_mut().0)
+            .get_defined_memory_mut(self.index)
+            .restore_cow_image(&image.0)
+    }
+
     /// Creates a new WebAssembly memory given the configuration of `ty`.
     ///
     /// The `store` argument will be the owner of the returned [`Memory`]. All

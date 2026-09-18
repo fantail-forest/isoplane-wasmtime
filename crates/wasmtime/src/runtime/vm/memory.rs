@@ -293,9 +293,8 @@ impl Memory {
         // `LocalMemory` structure created, notably we already have
         // `memory_image` and regardless of configuration settings this memory
         // can't move its base pointer since it's a fixed allocation.
-        let mut memory = LocalMemory::new(ty, memory_tunables, allocation, None)?;
-        assert!(memory.memory_image.is_none());
-        memory.memory_image = Some(memory_image);
+        let mut memory =
+            LocalMemory::with_slot(ty, memory_tunables, allocation, Some(memory_image));
         memory.memory_may_move = false;
 
         Ok(if ty.shared {
@@ -568,46 +567,57 @@ impl LocalMemory {
         alloc: Box<dyn RuntimeLinearMemory>,
         memory_image: Option<&Arc<MemoryImage>>,
     ) -> Result<LocalMemory> {
-        // If a memory image was specified, try to create the MemoryImageSlot on
-        // top of our mmap.
-        let memory_image = match memory_image {
+        // A CoW slot is created for every page-aligned mmap-backed memory when
+        // copy-on-write initialization is enabled, whether or not the module
+        // carries an initial image, so that a captured snapshot can later be
+        // restored into a memory whose module has no data segments.
+        let memory_image = match alloc.base() {
             #[cfg(has_virtual_memory)]
-            Some(image) => {
+            MemoryBase::Mmap(mmap_base)
+                if memory_image.is_some() || memory_tunables.tunables().memory_init_cow =>
+            {
                 // We currently don't support memory_image if
                 // `RuntimeLinearMemory::byte_size` is not a multiple of the host page
                 // size. See https://github.com/bytecodealliance/wasmtime/issues/9660.
                 if let Ok(byte_size) = HostAlignedByteCount::new(alloc.byte_size()) {
-                    // memory_image is CoW-based so it is expected to be backed
-                    // by an mmap.
-                    let mmap_base = match alloc.base() {
-                        MemoryBase::Mmap(offset) => offset,
-                        MemoryBase::Raw { .. } => {
-                            unreachable!("memory_image is Some only for mmap-based memories")
-                        }
-                    };
-
                     // Memories allocated on demand are never striped with MPK
                     // protection keys, so this slot has no key to preserve.
                     let mut slot =
                         MemoryImageSlot::create(mmap_base, byte_size, alloc.byte_capacity(), None);
-                    slot.instantiate(alloc.byte_size(), Some(image), ty, memory_tunables)?;
+                    slot.instantiate(alloc.byte_size(), memory_image, ty, memory_tunables)?;
                     Some(slot)
                 } else {
                     None
                 }
             }
-            #[cfg(not(has_virtual_memory))]
-            Some(_) => unreachable!(),
-            None => None,
+            #[cfg(has_virtual_memory)]
+            MemoryBase::Mmap(_) => None,
+            MemoryBase::Raw(_) => {
+                assert!(
+                    memory_image.is_none(),
+                    "memory_image is Some only for mmap-based memories"
+                );
+                None
+            }
         };
-        Ok(LocalMemory {
+        Ok(Self::with_slot(ty, memory_tunables, alloc, memory_image))
+    }
+
+    /// Wraps an allocation whose CoW slot, if any, the caller already owns.
+    pub fn with_slot(
+        ty: &wasmtime_environ::Memory,
+        memory_tunables: &MemoryTunables<'_>,
+        alloc: Box<dyn RuntimeLinearMemory>,
+        memory_image: Option<MemoryImageSlot>,
+    ) -> LocalMemory {
+        LocalMemory {
             ty: *ty,
             alloc,
             memory_may_move: ty.memory_may_move(memory_tunables),
             memory_image,
             memory_guard_size: memory_tunables.guard_size().try_into().unwrap(),
             memory_reservation: memory_tunables.reservation().try_into().unwrap(),
-        })
+        }
     }
 
     pub fn ty(&self) -> &wasmtime_environ::Memory {

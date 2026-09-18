@@ -46,7 +46,7 @@ impl SharedMemory {
         Self::wrap(
             engine,
             ty,
-            LocalMemory::new(ty, &memory_tunables, boxed, None)?,
+            LocalMemory::with_slot(ty, &memory_tunables, boxed, None),
         )
     }
 

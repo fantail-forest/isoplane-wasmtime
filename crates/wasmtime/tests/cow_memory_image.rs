@@ -215,6 +215,45 @@ mod tests {
         Ok(())
     }
 
+    fn exercise_without_initial_image(pool: bool) -> Result<()> {
+        let engine = engine(pool, 0)?;
+        let module = Module::new(&engine, "(module (memory (export \"memory\") 1 4))")?;
+        let (snapshot, _) = image()?;
+        let mut store = Store::new(&engine, ());
+        let instance = Instance::new(&mut store, &module, &[])?;
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        memory.grow(&mut store, 1)?;
+        // SAFETY: the instance is idle and has no mutable state outside this memory.
+        unsafe { memory.restore_cow_image(&mut store, &snapshot)? };
+        assert_eq!(
+            memory.data(&store)[0],
+            42,
+            "a memory whose module has no data segments must still receive a snapshot"
+        );
+        assert_eq!(
+            memory.data(&store)[2 * 65536 - 1],
+            73,
+            "the whole snapshot must be visible"
+        );
+        memory.grow(&mut store, 1)?;
+        assert!(
+            memory.data(&store)[2 * 65536..]
+                .iter()
+                .all(|byte| *byte == 0),
+            "growth after restore must expose zeroed pages"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn on_demand_memories_without_an_initial_image_accept_snapshots() -> Result<()> {
+        exercise_without_initial_image(false)
+    }
+    #[test]
+    fn pooled_memories_without_an_initial_image_accept_snapshots() -> Result<()> {
+        exercise_without_initial_image(true)
+    }
+
     #[test]
     fn pooled_decommitted_slots_preserve_isolation() -> Result<()> {
         exercise(true, 0)

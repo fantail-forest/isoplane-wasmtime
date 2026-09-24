@@ -187,6 +187,113 @@ mod tests {
         Ok(())
     }
 
+    fn filled(pages: &[u8]) -> Result<CowMemorySource> {
+        let mut file = tempfile::tempfile()?;
+        for byte in pages {
+            file.write_all(&vec![*byte; 65536])?;
+        }
+        // SAFETY: nothing writes the file after it is retained.
+        unsafe { CowMemorySource::from_file(file) }
+    }
+
+    fn extent(source: usize, file_page: u64, memory_page: usize) -> CowMemorySourceExtent {
+        CowMemorySourceExtent {
+            source,
+            file_offset: file_page * 65536,
+            memory_offset: memory_page * 65536,
+            length: 65536,
+        }
+    }
+
+    fn restored(engine: &Engine, image: &CowMemoryImage) -> Result<(Store<()>, Memory)> {
+        let module = Module::new(engine, r#"(module (memory (export "memory") 1 4))"#)?;
+        let mut store = Store::new(engine, ());
+        let instance = Instance::new(&mut store, &module, &[])?;
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        memory.grow(&mut store, 1)?;
+        // SAFETY: the instance is idle and has no mutable state outside this memory.
+        unsafe { memory.restore_cow_image(&mut store, image)? };
+        Ok((store, memory))
+    }
+
+    #[test]
+    fn an_image_maps_each_extent_from_its_own_source() -> Result<()> {
+        for pool in [false, true] {
+            let engine = engine(pool, 0)?;
+            let base = filled(&[0x11, 0x22])?;
+            let layer = filled(&[0x33])?;
+            let image = CowMemoryImage::from_sources(
+                &[base, layer],
+                2 * 65536,
+                vec![extent(0, 0, 0), extent(1, 0, 1)],
+            )?;
+            for _ in 0..2 {
+                let (mut store, memory) = restored(&engine, &image)?;
+                assert_eq!(
+                    (memory.data(&store)[0], memory.data(&store)[65536]),
+                    (0x11, 0x33),
+                    "each extent must map from the source it names"
+                );
+                memory.data_mut(&mut store)[65536] = 0x44;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn images_sharing_a_source_keep_their_own_extents() -> Result<()> {
+        let engine = engine(false, 0)?;
+        let base = filled(&[0x11, 0x22])?;
+        let first = CowMemoryImage::from_sources(
+            &[base.clone(), filled(&[0x33])?],
+            2 * 65536,
+            vec![extent(0, 0, 0), extent(1, 0, 1)],
+        )?;
+        let second = CowMemoryImage::from_sources(
+            &[base, filled(&[0x55])?],
+            2 * 65536,
+            vec![extent(1, 0, 0), extent(0, 1, 1)],
+        )?;
+        let (first_store, first_memory) = restored(&engine, &first)?;
+        let (second_store, second_memory) = restored(&engine, &second)?;
+        assert_eq!(
+            (
+                first_memory.data(&first_store)[0],
+                first_memory.data(&first_store)[65536]
+            ),
+            (0x11, 0x33),
+            "the first image must keep its own layout"
+        );
+        assert_eq!(
+            (
+                second_memory.data(&second_store)[0],
+                second_memory.data(&second_store)[65536]
+            ),
+            (0x55, 0x22),
+            "a second image over the same source must keep its own layout"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_extents_naming_a_missing_or_overrun_source() -> Result<()> {
+        let sources = [filled(&[0x11])?, filled(&[0x22])?];
+        for extents in [
+            vec![extent(0, 0, 0), extent(2, 0, 1)],
+            vec![extent(0, 0, 0), extent(1, 1, 1)],
+        ] {
+            assert!(
+                CowMemoryImage::from_sources(&sources, 2 * 65536, extents.clone()).is_err(),
+                "an extent outside its sources must be refused: {extents:?}"
+            );
+        }
+        assert!(
+            CowMemoryImage::from_sources(&[], 65536, vec![extent(0, 0, 0)]).is_err(),
+            "an image needs at least one source"
+        );
+        Ok(())
+    }
+
     #[test]
     fn rejects_invalid_image_ranges() -> Result<()> {
         for (offset, length) in [(1, 65536), (0, 1), (65536, 65536), (0, 0)] {

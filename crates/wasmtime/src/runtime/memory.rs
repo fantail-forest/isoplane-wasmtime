@@ -242,6 +242,41 @@ pub struct CowMemoryExtent {
     pub length: usize,
 }
 
+/// One file-backed range in a snapshot image mapped from several files: the
+/// extent comes from the file at index `source` of the image's sources.
+#[cfg(all(target_os = "linux", feature = "std"))]
+#[derive(Clone, Debug)]
+pub struct CowMemorySourceExtent {
+    /// Index of the backing file among the image's sources.
+    pub source: usize,
+    /// Offset in that file, in bytes.
+    pub file_offset: u64,
+    /// Offset in guest linear memory, in bytes.
+    pub memory_offset: usize,
+    /// Extent length, in bytes.
+    pub length: usize,
+}
+
+/// A retained file that snapshot images map extents from. Images built from
+/// the same source share its one host mapping.
+#[cfg(all(target_os = "linux", feature = "std"))]
+#[derive(Clone)]
+pub struct CowMemorySource(alloc::sync::Arc<vm::SnapshotFile>);
+
+#[cfg(all(target_os = "linux", feature = "std"))]
+impl CowMemorySource {
+    /// Retain `file` for images to map extents from.
+    ///
+    /// # Safety
+    /// The file contents must remain unchanged until this source and every
+    /// image, store or allocator slot retaining it have been dropped.
+    pub unsafe fn from_file(file: std::fs::File) -> Result<Self> {
+        Ok(Self(alloc::sync::Arc::new(vm::SnapshotFile::from_file(
+            file,
+        )?)))
+    }
+}
+
 /// Immutable file-backed contents for restoring linear-memory snapshots.
 #[cfg(all(target_os = "linux", feature = "std"))]
 #[derive(Clone)]
@@ -261,6 +296,22 @@ impl CowMemoryImage {
     ) -> Result<Self> {
         Ok(Self(alloc::sync::Arc::new(
             vm::MemoryImage::from_snapshot_extents(file, length_bytes, extents)?,
+        )))
+    }
+
+    /// Map complete captured memory from ordered, page-aligned extents, each
+    /// taken from one of `sources`.
+    pub fn from_sources(
+        sources: &[CowMemorySource],
+        length_bytes: usize,
+        extents: Vec<CowMemorySourceExtent>,
+    ) -> Result<Self> {
+        Ok(Self(alloc::sync::Arc::new(
+            vm::MemoryImage::from_snapshot_sources(
+                sources.iter().map(|source| source.0.clone()).collect(),
+                length_bytes,
+                extents,
+            )?,
         )))
     }
 

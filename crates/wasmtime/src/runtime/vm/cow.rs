@@ -96,8 +96,30 @@ pub struct SnapshotFile {
     _unused: core::convert::Infallible,
 }
 
-#[cfg(all(target_os = "linux", feature = "std"))]
 impl SnapshotFile {
+    /// The file extents are mapped from.
+    #[cfg(all(target_os = "linux", feature = "std"))]
+    fn image_source(&self) -> &MemoryImageSource {
+        &self.source
+    }
+
+    /// The file's bytes, for copying an extent's original contents.
+    #[cfg(all(target_os = "linux", feature = "std"))]
+    fn data(&self) -> &[u8] {
+        &self.mapping
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "std")))]
+    fn image_source(&self) -> &MemoryImageSource {
+        match self._unused {}
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "std")))]
+    fn data(&self) -> &[u8] {
+        match self._unused {}
+    }
+
+    #[cfg(all(target_os = "linux", feature = "std"))]
     pub(crate) fn from_file(file: std::fs::File) -> Result<Self> {
         let mapping = super::MmapVec::from_file(file)?;
         let file = mapping
@@ -112,7 +134,7 @@ impl SnapshotFile {
 #[cfg(all(target_os = "linux", feature = "std"))]
 impl ModuleMemoryImageSource for SnapshotFile {
     fn wasm_data(&self) -> &[u8] {
-        &self.mapping
+        self.data()
     }
     fn mmap(&self) -> Option<&super::MmapVec> {
         Some(&self.mapping)
@@ -311,7 +333,7 @@ impl MemoryImage {
                 // SAFETY: construction validated every range against the retained file and memory size.
                 unsafe {
                     mmap_base.map_image_at(
-                        &self.extent_sources[extent.source].source,
+                        self.extent_sources[extent.source].image_source(),
                         extent.file_offset as u64,
                         extent.memory_offset,
                         extent.length,
@@ -351,7 +373,7 @@ impl MemoryImage {
             let overlap_end = (start + extent.length.byte_count()).min(end);
             if overlap_start < overlap_end {
                 let file_start = extent.file_offset + overlap_start - start;
-                let source = self.extent_sources[extent.source].wasm_data();
+                let source = self.extent_sources[extent.source].data();
                 destination[overlap_start - offset..overlap_end - offset]
                     .copy_from_slice(&source[file_start..file_start + overlap_end - overlap_start]);
             }

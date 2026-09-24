@@ -279,6 +279,11 @@ generate_trap_type! {
         /// An exception propagated out of a component without being caught.
         UncaughtException = "uncaught exception propagated out of component",
 
+        /// The storage backing a file-backed memory image could not be read
+        /// while the guest was running, so the guest's memory is no longer
+        /// available.
+        MappedStorageFault = "storage backing guest memory failed",
+
         // if adding a variant here be sure to update `trap.rs` and `trap.h` as
         // mentioned above
     }

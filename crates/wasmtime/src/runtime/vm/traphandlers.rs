@@ -1010,6 +1010,39 @@ impl CallThreadState {
         TrapTest::Trap(entry_handler)
     }
 
+    /// Classifies a Linux `SIGBUS`: storage backing a file-backed memory image
+    /// failed. Any wasm memory access can raise it, not only those compiled as
+    /// possibly trapping, so such a fault traps with `MappedStorageFault`.
+    ///
+    /// A fault on mapped code is not claimed: it can land in a trampoline
+    /// before the activation's entry state is recorded, and backtraces read
+    /// frame metadata from the same failed mapping. Embedders that need it
+    /// contained load code into anonymous memory.
+    #[cfg(all(target_os = "linux", has_native_signals, not(miri)))]
+    pub(crate) fn test_if_storage_fault(
+        &self,
+        regs: TrapRegisters,
+        faulting_addr: Option<usize>,
+        call_handler: impl FnOnce(&SignalHandler) -> bool,
+    ) -> TrapTest {
+        if let Some(handler) = self.signal_handler {
+            if unsafe { call_handler(&*handler) } {
+                return TrapTest::HandledByEmbedder;
+            }
+        }
+        if lookup_code(regs.pc).is_none()
+            || faulting_addr.is_some_and(|addr| lookup_code(addr).is_some())
+        {
+            return TrapTest::NotWasm;
+        }
+        self.set_jit_trap(
+            regs,
+            faulting_addr,
+            wasmtime_environ::CompiledTrap::Normal(wasmtime_environ::Trap::MappedStorageFault),
+        );
+        TrapTest::Trap(self.entry_trap_handler())
+    }
+
     pub(crate) fn set_jit_trap(
         &self,
         TrapRegisters { pc, fp, .. }: TrapRegisters,

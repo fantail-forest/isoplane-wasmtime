@@ -56,6 +56,7 @@ const _: () = {
     assert!(Trap::StreamOpTooBig as u8 == 47);
     assert!(Trap::WaitableSyncAndAsync as u8 == 48);
     assert!(Trap::UncaughtException as u8 == 49);
+    assert!(Trap::MappedStorageFault as u8 == 50);
 };
 
 #[repr(C)]

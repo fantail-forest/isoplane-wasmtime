@@ -83,7 +83,9 @@ fn foreach_handler(mut f: impl FnMut(*mut libc::sigaction, i32)) {
 
     // Sometimes we need to handle SIGBUS too:
     // - On Darwin, guard page accesses are raised as SIGBUS.
-    if cfg!(target_vendor = "apple") || cfg!(target_os = "freebsd") {
+    // - On Linux, a failed read of storage backing a file-backed memory
+    //   image is raised as SIGBUS.
+    if cfg!(target_vendor = "apple") || cfg!(target_os = "freebsd") || cfg!(target_os = "linux") {
         f(&raw mut PREV_SIGBUS, libc::SIGBUS);
     }
 
@@ -160,6 +162,17 @@ unsafe extern "C" fn trap_handler(
             _ => None,
         };
         let regs = unsafe { get_trap_registers(context, signum) };
+        #[cfg(target_os = "linux")]
+        let test = if signum == libc::SIGBUS {
+            info.test_if_storage_fault(regs, faulting_addr, |handler| {
+                handler(signum, siginfo, context)
+            })
+        } else {
+            info.test_if_trap(regs, faulting_addr, |handler| {
+                handler(signum, siginfo, context)
+            })
+        };
+        #[cfg(not(target_os = "linux"))]
         let test = info.test_if_trap(regs, faulting_addr, |handler| {
             handler(signum, siginfo, context)
         });

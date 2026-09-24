@@ -154,6 +154,40 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_reading_a_truncated_image_traps() -> Result<()> {
+        let engine = engine(false, 0)?;
+        let module = Module::new(
+            &engine,
+            r#"(module
+            (memory (export "memory") 1 4)
+            (func (export "read") (param i32) (result i32)
+                local.get 0 i32.load8_u))"#,
+        )?;
+        let mut file = tempfile::tempfile()?;
+        file.write_all(&[42; 65536])?;
+        let backing = file.try_clone()?;
+        // SAFETY: the test breaks this contract on purpose, only while the
+        // guest alone reads the image, to show that guest reads are contained.
+        let snapshot = unsafe { CowMemoryImage::from_file(file, 0, 65536)? };
+        let mut store = Store::new(&engine, ());
+        let instance = Instance::new(&mut store, &module, &[])?;
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        // SAFETY: the instance is idle and has no mutable state outside this memory.
+        unsafe { memory.restore_cow_image(&mut store, &snapshot)? };
+        backing.set_len(0)?;
+        let read = instance.get_typed_func::<i32, i32>(&mut store, "read")?;
+        let error = read
+            .call(&mut store, 0)
+            .expect_err("a guest must not read storage that no longer exists");
+        assert_eq!(
+            error.downcast_ref::<Trap>(),
+            Some(&Trap::MappedStorageFault),
+            "failed image storage must surface as this guest's trap: {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn rejects_invalid_image_ranges() -> Result<()> {
         for (offset, length) in [(1, 65536), (0, 1), (65536, 65536), (0, 0)] {
             let file = tempfile::tempfile()?;

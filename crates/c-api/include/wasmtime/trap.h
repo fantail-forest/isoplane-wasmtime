@@ -144,6 +144,8 @@ enum wasmtime_trap_code_enum {
   WASMTIME_TRAP_CODE_WAITABLE_SYNC_AND_ASYNC = 48,
   /// An exception propagated out of a component without being caught.
   WASMTIME_TRAP_CODE_UNCAUGHT_EXCEPTION = 49,
+  /// The storage backing a file-backed memory image failed.
+  WASMTIME_TRAP_CODE_MAPPED_STORAGE_FAULT = 50,
 };
 
 /**

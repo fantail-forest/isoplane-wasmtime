@@ -72,12 +72,51 @@ pub struct MemoryImage {
     /// at.
     module_source_offset: usize,
     extents: Vec<ImageExtent>,
+    /// The files a snapshot's extents map from, indexed by `ImageExtent::source`.
+    extent_sources: Vec<Arc<SnapshotFile>>,
 }
 
 struct ImageExtent {
+    source: usize,
     file_offset: usize,
     memory_offset: HostAlignedByteCount,
     length: HostAlignedByteCount,
+}
+
+/// A retained file that snapshot images map extents from; several images
+/// may share one, and with it one host mapping of the file.
+#[cfg(all(target_os = "linux", feature = "std"))]
+pub struct SnapshotFile {
+    source: MemoryImageSource,
+    mapping: super::MmapVec,
+}
+
+#[cfg(not(all(target_os = "linux", feature = "std")))]
+pub struct SnapshotFile {
+    _unused: core::convert::Infallible,
+}
+
+#[cfg(all(target_os = "linux", feature = "std"))]
+impl SnapshotFile {
+    pub(crate) fn from_file(file: std::fs::File) -> Result<Self> {
+        let mapping = super::MmapVec::from_file(file)?;
+        let file = mapping
+            .original_file()
+            .ok_or_else(|| format_err!("snapshot has no backing file"))?;
+        let source = MemoryImageSource::from_file(file)
+            .ok_or_else(|| format_err!("snapshot file mapping is unsupported"))?;
+        Ok(Self { source, mapping })
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "std"))]
+impl ModuleMemoryImageSource for SnapshotFile {
+    fn wasm_data(&self) -> &[u8] {
+        &self.mapping
+    }
+    fn mmap(&self) -> Option<&super::MmapVec> {
+        Some(&self.mapping)
+    }
 }
 
 impl MemoryImage {
@@ -104,21 +143,39 @@ impl MemoryImage {
         length_bytes: usize,
         extents: Vec<crate::CowMemoryExtent>,
     ) -> Result<Self> {
-        struct SnapshotSource(super::MmapVec);
-        impl ModuleMemoryImageSource for SnapshotSource {
-            fn wasm_data(&self) -> &[u8] {
-                &self.0
-            }
-            fn mmap(&self) -> Option<&super::MmapVec> {
-                Some(&self.0)
-            }
-        }
-        let mapping = super::MmapVec::from_file(file)?;
+        Self::from_snapshot_sources(
+            vec![Arc::new(SnapshotFile::from_file(file)?)],
+            length_bytes,
+            extents
+                .into_iter()
+                .map(|extent| crate::CowMemorySourceExtent {
+                    source: 0,
+                    file_offset: extent.file_offset,
+                    memory_offset: extent.memory_offset,
+                    length: extent.length,
+                })
+                .collect(),
+        )
+    }
+
+    #[cfg(all(target_os = "linux", feature = "std"))]
+    pub(crate) fn from_snapshot_sources(
+        sources: Vec<Arc<SnapshotFile>>,
+        length_bytes: usize,
+        extents: Vec<crate::CowMemorySourceExtent>,
+    ) -> Result<Self> {
+        let first = sources
+            .first()
+            .ok_or_else(|| format_err!("snapshot needs at least one source file"))?
+            .clone();
         let len = HostAlignedByteCount::new(length_bytes)?;
         ensure!(!len.is_zero(), "snapshot file must not be empty");
         let mut validated = Vec::new();
         let mut memory_end = 0usize;
         for extent in extents {
+            let source = sources
+                .get(extent.source)
+                .ok_or_else(|| format_err!("snapshot extent names a missing source file"))?;
             let offset = usize::try_from(extent.file_offset)?;
             HostAlignedByteCount::new(offset)?;
             let memory_offset = HostAlignedByteCount::new(extent.memory_offset)?;
@@ -134,10 +191,11 @@ impl MemoryImage {
                 memory_end <= length_bytes
                     && offset
                         .checked_add(extent.length)
-                        .is_some_and(|end| end <= mapping.len()),
+                        .is_some_and(|end| end <= source.mapping.len()),
                 "snapshot extent exceeds its backing file or memory"
             );
             validated.push(ImageExtent {
+                source: extent.source,
                 file_offset: offset,
                 memory_offset,
                 length,
@@ -147,19 +205,22 @@ impl MemoryImage {
             memory_end == length_bytes,
             "snapshot extents do not cover memory"
         );
-        let file = mapping
-            .original_file()
-            .ok_or_else(|| format_err!("snapshot has no backing file"))?;
-        let source = MemoryImageSource::from_file(file)
-            .ok_or_else(|| format_err!("snapshot file mapping is unsupported"))?;
+        let source = MemoryImageSource::from_file(
+            first
+                .mapping
+                .original_file()
+                .ok_or_else(|| format_err!("snapshot has no backing file"))?,
+        )
+        .ok_or_else(|| format_err!("snapshot file mapping is unsupported"))?;
         Ok(Self {
             source,
             len,
             source_offset: 0,
             linear_memory_offset: HostAlignedByteCount::ZERO,
-            module_source: Arc::new(SnapshotSource(mapping)),
+            module_source: first,
             module_source_offset: 0,
             extents: validated,
+            extent_sources: sources,
         })
     }
 
@@ -219,6 +280,7 @@ impl MemoryImage {
                             module_source: module_source.clone(),
                             module_source_offset: data_range.start,
                             extents: Vec::new(),
+                            extent_sources: Vec::new(),
                         }));
                     }
                 }
@@ -236,6 +298,7 @@ impl MemoryImage {
                 module_source: module_source.clone(),
                 module_source_offset: data_range.start,
                 extents: Vec::new(),
+                extent_sources: Vec::new(),
             }));
         }
 
@@ -248,7 +311,7 @@ impl MemoryImage {
                 // SAFETY: construction validated every range against the retained file and memory size.
                 unsafe {
                     mmap_base.map_image_at(
-                        &self.source,
+                        &self.extent_sources[extent.source].source,
                         extent.file_offset as u64,
                         extent.memory_offset,
                         extent.length,
@@ -288,6 +351,7 @@ impl MemoryImage {
             let overlap_end = (start + extent.length.byte_count()).min(end);
             if overlap_start < overlap_end {
                 let file_start = extent.file_offset + overlap_start - start;
+                let source = self.extent_sources[extent.source].wasm_data();
                 destination[overlap_start - offset..overlap_end - offset]
                     .copy_from_slice(&source[file_start..file_start + overlap_end - overlap_start]);
             }
@@ -955,6 +1019,7 @@ mod test {
             module_source: Arc::new(source),
             module_source_offset: 0,
             extents: Vec::new(),
+            extent_sources: Vec::new(),
         });
 
         struct TestDataSource {

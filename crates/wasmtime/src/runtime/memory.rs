@@ -332,6 +332,25 @@ impl CowMemoryImage {
 }
 
 impl Memory {
+    /// Make a CoW memory's reserved pages accessible without changing its logical size.
+    ///
+    /// Requires [`Config::memory_explicit_bounds_checks`](crate::Config::memory_explicit_bounds_checks).
+    /// Only private Linux CoW memories are supported. The ceiling must fit the
+    /// existing reservation and module maximum. Pages remain demand allocated;
+    /// normal `memory.grow` still applies resource limits and exposes zeroed bytes.
+    #[cfg(all(target_os = "linux", feature = "std"))]
+    pub fn prepare_growth(&self, mut store: impl AsContextMut, ceiling_bytes: usize) -> Result<()> {
+        let store = store.as_context_mut();
+        ensure!(
+            store.engine().tunables().memory_explicit_bounds_checks,
+            "preparing memory growth requires explicit memory bounds checks"
+        );
+        self.instance
+            .get_mut(store.0)
+            .get_defined_memory_mut(self.index)
+            .prepare_growth(ceiling_bytes)
+    }
+
     /// Replace current linear memory with a private mapping of a captured image.
     /// Grow memory to the image size first. Discard this store if restoration fails.
     ///

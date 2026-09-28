@@ -68,6 +68,9 @@ define_tunables! {
         /// Initial size, in bytes, to be allocated for linear memories.
         pub memory_reservation: u64,
 
+        /// Check accesses against logical memory size even when more pages are accessible.
+        pub memory_explicit_bounds_checks: bool,
+
         /// The size, in bytes, of the guard page region for linear memories.
         pub memory_guard_size: u64,
 
@@ -252,6 +255,7 @@ impl Tunables {
             // No virtual memory tricks are available on miri so make these
             // limits quite conservative.
             memory_reservation: 1 << 20,
+            memory_explicit_bounds_checks: false,
             memory_guard_size: 0,
             memory_reservation_for_growth: 0,
 

@@ -1927,6 +1927,16 @@ impl Config {
         self
     }
 
+    /// Require bounds checks against the current logical memory size.
+    ///
+    /// This disables optimizations that rely on inaccessible pages beyond that
+    /// size, allowing [`Memory::prepare_growth`](crate::Memory::prepare_growth)
+    /// to make pages accessible before the guest grows into them. Defaults to false.
+    pub fn memory_explicit_bounds_checks(&mut self, enable: bool) -> &mut Self {
+        self.tunables.memory_explicit_bounds_checks = Some(enable);
+        self
+    }
+
     /// Indicates whether linear memories may relocate their base pointer at
     /// runtime.
     ///

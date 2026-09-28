@@ -295,6 +295,7 @@ impl Metadata<'_> {
         let Tunables {
             collector,
             memory_reservation,
+            memory_explicit_bounds_checks,
             memory_guard_size,
             debug_native,
             debug_guest,
@@ -381,6 +382,11 @@ impl Metadata<'_> {
             "epoch interruption",
         )?;
         Self::check_bool(memory_may_move, other.memory_may_move, "memory may move")?;
+        Self::check_bool(
+            memory_explicit_bounds_checks,
+            other.memory_explicit_bounds_checks,
+            "explicit memory bounds checks",
+        )?;
         Self::check_bool(
             guard_before_linear_memory,
             other.guard_before_linear_memory,

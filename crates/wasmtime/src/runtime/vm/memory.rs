@@ -238,6 +238,26 @@ pub enum Memory {
 
 impl Memory {
     #[cfg(all(target_os = "linux", feature = "std"))]
+    pub(crate) fn prepare_growth(&mut self, ceiling_bytes: usize) -> Result<()> {
+        let Self::Local(memory) = self else {
+            bail!("preparing memory growth does not support shared memory");
+        };
+        ensure!(
+            ceiling_bytes <= memory.alloc.byte_capacity(),
+            "growth ceiling exceeds the reserved capacity"
+        );
+        ensure!(
+            ceiling_bytes as u64 <= memory.ty.maximum_byte_size().unwrap_or(u64::MAX),
+            "growth ceiling exceeds the module maximum"
+        );
+        let slot = memory
+            .memory_image
+            .as_mut()
+            .ok_or_else(|| format_err!("memory has no Wasmtime-owned CoW slot"))?;
+        slot.set_heap_limit(ceiling_bytes)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "std"))]
     pub(crate) fn restore_cow_image(&mut self, image: &Arc<MemoryImage>) -> Result<()> {
         let Self::Local(memory) = self else {
             bail!("snapshot restoration does not support shared memory");

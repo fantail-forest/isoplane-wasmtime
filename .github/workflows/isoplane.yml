@@ -1,9 +1,9 @@
 name: Isoplane fork checks
 on:
   push:
-    branches: [wisp/cow-memory-images-48.0.2]
+    branches: [isoplane-revisions]
   pull_request:
-    branches: [wisp/cow-memory-images-48.0.2]
+    branches: [isoplane-revisions]
   workflow_dispatch:
 permissions:
   contents: read

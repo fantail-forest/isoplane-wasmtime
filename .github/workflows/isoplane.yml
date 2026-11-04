@@ -32,7 +32,8 @@ jobs:
       - name: Test snapshot and prepared-memory APIs
         run: cargo +1.98.0 test --locked -p wasmtime --no-default-features --features std,runtime,cranelift,pooling-allocator,wat --test cow_memory_image --test prepared_memory_growth
       - name: Test snapshot mapping failure recovery
-        run: cargo +1.98.0 test --locked -p wasmtime --lib --no-default-features --features std,runtime,cranelift,pooling-allocator,wat runtime::vm::cow::test
+        # Upstream unit-test modules assume the default feature set, even when filtered.
+        run: cargo +1.98.0 test --locked -p wasmtime --lib runtime::vm::cow::test
       - name: Record disk consumption
         if: always()
         run: df -h .

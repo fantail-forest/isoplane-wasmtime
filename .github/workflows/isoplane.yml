@@ -1,0 +1,38 @@
+name: Isoplane fork checks
+on:
+  push:
+    branches: [wisp/cow-memory-images-48.0.2]
+  pull_request:
+    branches: [wisp/cow-memory-images-48.0.2]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: isoplane-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: Copy-on-write and prepared-memory regressions
+    if: github.repository == 'fantail-forest/isoplane-wasmtime'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - name: Install Rust
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Test snapshot and prepared-memory APIs
+        run: cargo +1.98.0 test --locked -p wasmtime --no-default-features --features std,runtime,cranelift,pooling-allocator,wat --test cow_memory_image --test prepared_memory_growth
+      - name: Test snapshot mapping failure recovery
+        run: cargo +1.98.0 test --locked -p wasmtime --lib --no-default-features --features std,runtime,cranelift,pooling-allocator,wat runtime::vm::cow::test
+      - name: Record disk consumption
+        if: always()
+        run: df -h .

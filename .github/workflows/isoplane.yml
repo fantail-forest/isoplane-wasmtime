@@ -37,3 +37,43 @@ jobs:
       - name: Record disk consumption
         if: always()
         run: df -h .
+
+  buckets:
+    name: Select upstream's pull request tests
+    if: github.repository == 'fantail-forest/isoplane-wasmtime'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tests: ${{ steps.select.outputs.tests }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - name: List the test buckets upstream runs on a pull request
+        id: select
+        # Empty commit and file lists select the matrix upstream gives a pull
+        # request by default: its Linux x86_64 tests, split by crate.
+        run: |
+          touch "$RUNNER_TEMP/commits.log" "$RUNNER_TEMP/names.log"
+          tests=$(node ci/build-test-matrix.js "$RUNNER_TEMP/commits.log" "$RUNNER_TEMP/names.log" false | jq -c .)
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+
+  upstream:
+    name: ${{ matrix.name }}
+    needs: buckets
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.buckets.outputs.tests) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          submodules: true
+      - uses: ./.github/actions/install-rust
+      - name: Run upstream's tests for this bucket
+        run: python3 ./ci/run-tests.py --locked ${{ matrix.bucket }}
+      - name: Record disk consumption
+        if: always()
+        run: df -h .

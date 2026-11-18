@@ -1,0 +1,28 @@
+name: Tell Isoplane a commit landed
+on:
+  push:
+    branches: [isoplane-revisions]
+permissions: {}
+jobs:
+  notify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: isoplane-helper
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        id: app
+        with:
+          client-id: ${{ vars.ISOPLANE_HELPER_CLIENT_ID }}
+          private-key: ${{ secrets.ISOPLANE_HELPER_PRIVATE_KEY }}
+          owner: fantail-forest
+          repositories: isoplane
+          permission-contents: write
+      # Isoplane's move-fork-pins workflow moves the pins of its open pull requests. It logs this payload and decides nothing from it.
+      - name: Send fork-landed to Isoplane
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          gh api --method POST repos/fantail-forest/isoplane/dispatches \
+            -f event_type=fork-landed \
+            -f "client_payload[fork]=$GITHUB_REPOSITORY" \
+            -f "client_payload[revision]=$GITHUB_SHA"
